@@ -298,7 +298,9 @@ for call_parameter_csv in call_parameter_csv_list :
                     buffer=BytesIO()
                     with gzip.GzipFile(fileobj=buffer, mode='wb') as gzip_file:
                         gzip_file.write(json.dumps(data,ensure_ascii=False,indent=4).encode("utf-8"))
-                        gzip_blob.upload_from_file(BytesIO(buffer.getvalue()))
+                    
+                    gzip_blob.upload_from_file(BytesIO(buffer.getvalue()))
+                    print(f"blob:'{gzip_blob_name}' uploaded")
                 
                 print(Fore.GREEN +f"Page {pageNumber} : retrieval OK"+ Fore.RESET +f"    Total: {page_max} , Max: {max_page_to_fetch} ")
 

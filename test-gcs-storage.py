@@ -1,10 +1,12 @@
 from google.cloud import storage
 import pandas as pd
 from io import BytesIO
+import gzip
+import json
 
 # ⚙️ Configuration
 BUCKET_NAME = "airfrance-bucket"
-SOURCE_BLOB_NAME = "df_call_parameters.csv"     # chemin du CSV source dans le bucket
+SOURCE_BLOB_NAME = "data/afklm_api_data_collection_destination=ATL&origin=YYZ&endRange=2025-10-14T23_59_59Z&startRange=2025-05-15T09_00_00Z_0.json.gzip"     # chemin du CSV source dans le bucket
 DESTINATION_BLOB_NAME = "df_call_parameters.csv"  # chemin du CSV modifié
 
 def read_csv_from_gcs(bucket_name: str, blob_name: str) -> pd.DataFrame:
@@ -39,6 +41,12 @@ def modify_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 def main():
     storage_client = storage.Client()
     bucket = storage_client.bucket(BUCKET_NAME)
+    blob = bucket.blob(SOURCE_BLOB_NAME)
+    gzip_data = blob.download_as_bytes()
+    with gzip.GzipFile(fileobj=BytesIO(gzip_data)) as gz :
+        data = json.load(gz)
+    
+    print(json.dumps(data))
     
 
     df = read_csv_from_gcs(BUCKET_NAME, SOURCE_BLOB_NAME)
