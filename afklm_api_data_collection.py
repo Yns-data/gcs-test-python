@@ -21,7 +21,6 @@ For each querry, a .json file named according to the parameters of the querry an
 '''
 
 ### Library import
-
 import pandas as pd
 import requests
 import re
@@ -30,15 +29,16 @@ import json
 import os
 from io import BytesIO
 import datetime
-from colorama import Fore, Style
+from colorama import Fore
 import gzip
 from google.cloud import storage
 from dotenv import load_dotenv
-
-# loading envirement variables
-load_dotenv()
+import logging
+import google.cloud.logging
+from google.cloud.logging.handlers import CloudLoggingHandler
 
 ### Script parameters
+PROJECT_ID = "trusty-anchor-473006-u9"
 bucket_name = "airfrance-bucket"
 path_data_storage = "data"
 path_call_parameter_file_folder = "call_parameter_lists"
@@ -46,15 +46,31 @@ path_call_parameter_csv_root = "df_call_parameters"
 output_format = ["json","gzip"] # ["json","gzip"]
 skip_previously_failed = False
 api_key_list_file = "./afklm_api_keys.txt"
-
-
-
 max_page_to_fetch = 1
 pageNumberStart = 0
 page_max = 100000 # Will automatically be adjusted after having retrived the fist page 
 refresh_stats = False
 time_delay_query = 1.5 # API limited to 1 call / s, 100 / day
 non_parameters = ["call_parameters",'response', 'message', 'timestamp', 'nb_of_pages_already_retrieved', 'totalPages', 'completion','totalFlights']
+
+
+# configure logger
+client = google.cloud.logging.Client(project=PROJECT_ID)
+cloud_handler = CloudLoggingHandler(client)
+console_handler = logging.StreamHandler()
+formatter = logging.Formatter(
+    fmt='[%(levelname)s] %(asctime)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+console_handler.setFormatter(formatter)
+logger = logging.getLogger("extraction_app_logger")
+logger.setLevel(logging.INFO)
+logger.addHandler(cloud_handler)
+logger.addHandler(console_handler)
+logger.propagate = False
+
+# loading envirement variables
+load_dotenv()
 
 # Initialisation GCS client
 client_storage = storage.Client()
@@ -71,7 +87,7 @@ call_parameter_csv_list = [val.name for val in path_call_parameter_csv_list if '
 
 for call_parameter_csv in call_parameter_csv_list :
     
-    print(call_parameter_csv)
+    logger.info(call_parameter_csv)
     
     
 
@@ -89,7 +105,7 @@ for call_parameter_csv in call_parameter_csv_list :
 
     
     for i in range(len(df_call_parameters)):
-     
+    
         df_subset_parameter = df_call_parameters.iloc[[i]].to_dict(orient="list")
 
         call_parameters_url = "&".join([key + "=" + str(val[0]) for key, val in df_subset_parameter.items()
@@ -158,8 +174,7 @@ for call_parameter_csv in call_parameter_csv_list :
     try:
         df_call_parameters = pd.read_csv(BytesIO(call_parameter_csv_data),encoding="utf-8").fillna('')
     except Exception as e:
-        print("Execption was occured while loading parameters file")
-        print(e)
+        logger.error(f"Execption was occured while loading parameters file: {e}")
         pass
 
     i = 0
@@ -176,7 +191,7 @@ for call_parameter_csv in call_parameter_csv_list :
 
     for i in range(0, len(df_call_parameters)): 
         
-        print("")
+        # print("")
         
         
         
@@ -208,12 +223,12 @@ for call_parameter_csv in call_parameter_csv_list :
                         if val[0] != '' and val[0] != '[nan]'])
 
 
-        print(Fore.RESET + f"{call_parameters_url}")
+        logger.info(f"call parameters for this request are {call_parameters_url}")
         
         if skip_previously_failed & ( int(match_error)> 200):
             
             
-            print(Fore.MAGENTA + f"skipped because previously failed")
+            logger.error(f"skipped because previously failed")
             continue
 
         
@@ -224,7 +239,7 @@ for call_parameter_csv in call_parameter_csv_list :
         ### Check date query coherence
 
         if df_subset['endRange'].item() < df_subset['startRange'].item():
-            print("ERROR: endRange < startRange")
+            logger.error("ERROR: endRange < startRange")
             break
 
 
@@ -244,7 +259,7 @@ for call_parameter_csv in call_parameter_csv_list :
             
             
             if (json_to_make in json_list)| (json_to_make in [file + ".gzip" for file in json_list] ) : # skip current query if corresponding json already present
-                print(Fore.BLUE +f"Page {pageNumber} : skipped because already retrieved")
+                logger.warning(f"Page {pageNumber} : skipped because already retrieved")
                 
                 
                 
@@ -300,9 +315,9 @@ for call_parameter_csv in call_parameter_csv_list :
                         gzip_file.write(json.dumps(data,ensure_ascii=False,indent=4).encode("utf-8"))
                     
                     gzip_blob.upload_from_file(BytesIO(buffer.getvalue()))
-                    print(f"blob:'{gzip_blob_name}' uploaded")
+                    logger.info(f"blob:'{gzip_blob_name}' uploaded")
                 
-                print(Fore.GREEN +f"Page {pageNumber} : retrieval OK"+ Fore.RESET +f"    Total: {page_max} , Max: {max_page_to_fetch} ")
+                logger.info(f"Page {pageNumber} : retrieval OK"+ Fore.RESET +f"    Total: {page_max} , Max: {max_page_to_fetch} ")
 
                 if  df_subset['nb_of_pages_already_retrieved'].item() == '': # Check info already present in df_call_parameters.csv  
 
@@ -328,6 +343,8 @@ for call_parameter_csv in call_parameter_csv_list :
                 df_call_parameters_new = df_call_parameters_new.drop_duplicates(subset=parameter_list, keep='last')
                 csv_buffer = BytesIO()
                 df_call_parameters_new.fillna('').to_csv(csv_buffer,encoding="utf-8", index=0)
+                call_parameter_csv_blob.upload_from_string(csv_buffer.getvalue(), content_type="text/csv")
+                logger.info("df_call_parameters.csv updated")
 
                 
                 pageNumber = pageNumber + 1
@@ -336,7 +353,7 @@ for call_parameter_csv in call_parameter_csv_list :
             elif ("Developer" in response.text)  & (API_key_list_length > API_key_counter + 1) : # Iterate of API key list to test the next one
                 
                 
-                print(Fore.YELLOW + f"Trying next API key previous: {API_key}, next: {API_key_list[API_key_counter+1]}")
+                logger.info(f"Trying next API key previous: {API_key}, next: {API_key_list[API_key_counter+1]}")
                 API_key_counter = API_key_counter + 1
                 
                 
@@ -345,7 +362,7 @@ for call_parameter_csv in call_parameter_csv_list :
                 
             else:
                 
-                print(Fore.RED + f"Issues with the call: {response} {response.text}")
+                logger.warning(f"Issues with the call: {response} {response.text}")
             
                 df_subset.loc[0,['response']] = str(response)
                 df_subset.loc[0,['message']] = str(response.text)            
@@ -356,13 +373,14 @@ for call_parameter_csv in call_parameter_csv_list :
                 
                 csv_buffer = BytesIO()
                 df_call_parameters_new.fillna('').to_csv(csv_buffer,encoding="utf-8", index=0)
+                call_parameter_csv_blob.upload_from_string(csv_buffer.getvalue(), content_type="text/csv")
+                logger.info("df_call_parameters.csv updated")
 
                 break
             
             
         if no_more_api_key:
-            print(Fore.RED + "API keys all consumed")
-            print(Style.RESET_ALL)
+            logger.info("API keys all consumed")
             break
         
         
@@ -381,6 +399,9 @@ for call_parameter_csv in call_parameter_csv_list :
         df_call_parameters_new = pd.concat([df_call_parameters, df_call_parameters_date_update],ignore_index=True).fillna('').sort_values(['startRange','endRange','response'])
         csv_buffer = BytesIO()
         df_call_parameters_new.fillna('').to_csv(csv_buffer,encoding="utf-8", index=0)
+        call_parameter_csv_blob.upload_from_string(csv_buffer.getvalue(), content_type="text/csv")
+        logger.info("df_call_parameters.csv updated")
+
 
 
 '''
